@@ -1,0 +1,132 @@
+name: Workflow_1 - Increase App Versions on every Push to HOTFIX
+
+on:
+  push:
+    branches:
+      - hotfix
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  increment-version-and-update-csproj:
+    runs-on: runner02
+    env:
+      PROJECTS_LIST: |
+        SERVICE_A=./SERVICE_A/src/Company.SERVICE_A.Api/Company.SERVICE_A.Api.csproj
+        SERVICE_B=./ServiceB/src/Company.ServiceB.Api/Company.ServiceB.Api.csproj
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify Versions
+        id: verify_versions
+        shell: bash
+        run: |
+          #!/usr/bin/env bash
+          set -e
+          echo "Projects list:"
+          echo "$PROJECTS_LIST"
+
+          # Parse the PROJECTS_LIST into an associative array
+          declare -A PROJECTS
+          while IFS='=' read -r key value; do
+            # Skip empty lines
+            [ -z "$key" ] && continue
+            PROJECTS[$key]=$value
+          done < <(echo "$PROJECTS_LIST")
+
+          # Use the SERVICE_A project as the source
+          SOURCE_PROJECT="SERVICE_A"
+          SOURCE_CSPROJ="${PROJECTS[$SOURCE_PROJECT]}"
+
+          # Extract current App Version from source project
+          CURRENT_VERSION=$(awk -F '[<>]' '/<Version>/{print $3}' "$SOURCE_CSPROJ")
+          if [ -z "$CURRENT_VERSION" ]; then
+            echo "No <Version> tag found in $SOURCE_CSPROJ"
+            exit 1
+          fi
+
+          # Verify that all projects have the same version
+          for PROJECT in "${!PROJECTS[@]}"; do
+            CSPROJ_PATH="${PROJECTS[$PROJECT]}"
+            PROJECT_VERSION=$(awk -F '[<>]' '/<Version>/{print $3}' "$CSPROJ_PATH")
+
+            if [ "$PROJECT_VERSION" != "$CURRENT_VERSION" ]; then
+              echo "Version mismatch detected in $CSPROJ_PATH"
+              echo "Expected: $CURRENT_VERSION, Found: $PROJECT_VERSION"
+              exit 1
+            fi
+          done
+
+          echo "All project versions match: $CURRENT_VERSION"
+          echo "CURRENT_VERSION=$CURRENT_VERSION" >> $GITHUB_ENV
+
+      - name: Increment Versions for All Projects
+        id: increment_versions
+        run: |
+          #!/usr/bin/env bash
+          set -e
+          
+          # Load CURRENT_VERSION from environment
+          CURRENT_VERSION="${CURRENT_VERSION}"
+
+          # Rebuild the PROJECTS array
+          declare -A PROJECTS
+          while IFS='=' read -r key value; do
+            [ -z "$key" ] && continue
+            PROJECTS[$key]=$value
+          done < <(echo "$PROJECTS_LIST")
+
+          # Increment the BUILD component of MAJOR.MINOR.PATCH.BUILD
+          IFS='.' read -r MAJOR MINOR PATCH BUILD <<< "$CURRENT_VERSION"
+          BUILD=$((BUILD + 1))
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH.$BUILD"
+
+          echo "Incrementing all projects from $CURRENT_VERSION to $NEW_VERSION"
+
+          # Update all projects with the new version
+          for PROJECT in "${!PROJECTS[@]}"; do
+            CSPROJ_PATH="${PROJECTS[$PROJECT]}"
+            awk -v newver="$NEW_VERSION" '/<Version>/{gsub(/>[^<]+</,">"newver"<")}1' "$CSPROJ_PATH" > temp.csproj
+            mv temp.csproj "$CSPROJ_PATH"
+          done
+
+          echo "NEW_VERSION=$NEW_VERSION" >> $GITHUB_ENV
+
+      - name: Commit and push changes
+        run: |
+          # Load NEW_VERSION from environment
+          NEW_VERSION="${NEW_VERSION}"
+
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add .
+          # Only commit if there are actually changes staged
+          if ! git diff --cached --quiet; then
+            git commit -m "Incremented App Version: $NEW_VERSION"
+            git push origin HEAD:${GITHUB_REF}
+          else
+            echo "No changes to commit."
+          fi
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

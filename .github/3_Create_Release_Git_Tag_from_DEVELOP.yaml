@@ -1,0 +1,125 @@
+name: Workflow_3 - Create Git Release Tag on PR merged from DEVELOP
+
+on:
+  workflow_dispatch:   # Allow to run manually
+  pull_request:
+    types: [closed]    # Trigger when a pull request is closed
+    branches:
+      - release
+
+permissions:
+  contents: write
+
+jobs:
+  create-release-tag-based-on-app-version:
+    # Not trigger workflow when PR was just closed manually
+    if: > 
+      github.event.pull_request.merged == true && 
+      github.event.pull_request.head.ref == 'develop' && 
+      github.event.pull_request.base.ref == 'release'
+    runs-on: runner02
+    env:
+      CSPROJ_PATH: ./SERVICE_A/src/Company.SERVICE_A.Api/Company.SERVICE_A.Api.csproj
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract current App Version
+        id: get_version
+        run: |
+          CURRENT_APP_VERSION=$(awk -F '[<>]' '/<Version>/{print $3}' $CSPROJ_PATH)
+          echo "Current Version: $CURRENT_APP_VERSION"
+          echo "CURRENT_APP_VERSION=$CURRENT_APP_VERSION" >> $GITHUB_ENV
+
+      - name: Construct Release Tag with "v" Prefix
+        id: construct_tag
+        run: |
+          RELEASE_TAG=v${CURRENT_APP_VERSION}
+          echo "Release Tag: $RELEASE_TAG"
+          echo "RELEASE_TAG=v${CURRENT_APP_VERSION}" >> $GITHUB_ENV
+
+      - name: Create new Release GIT TAG (an annotated tag)
+        run: |
+          git tag -a $RELEASE_TAG -m "Creating new Release TAG after merging PR" || { echo "Failed to create tag"; exit 1; }
+
+      - name: Show new Release GIT TAG
+        run: |
+          git show $RELEASE_TAG
+
+      - name: Push new Release GIT TAG
+        run: |
+          git push origin $RELEASE_TAG -v
+
+      - name: List all Remote Release git tags
+        run: |
+          git ls-remote --tags
+
+      - name: Authenticate GitHub CLI
+        env:
+          ACTIONS_JENKINS_TOKEN: ${{ secrets.ACTIONS_JENKINS_TOKEN }}
+        run: |
+          echo ${ACTIONS_JENKINS_TOKEN} | gh auth login --hostname github.companyproject.com --with-token
+          gh auth status
+
+      - name: Create GitHub Release via GH CLI
+        run: |
+          gh release create $RELEASE_TAG --title "Release $RELEASE_TAG" --notes "🚀 Auto-generated release for version $RELEASE_TAG after merging DEVELOP into RELEASE."
+
+####################
+####################   MERGE RELEASE to DEVELOP  ###################
+####################
+
+  merge-release-to-develop:
+    needs: create-release-tag-based-on-app-version
+    runs-on: runner02
+    steps:
+      - name: Git Show Config
+        run: |
+          echo "============  Show Config --show-origin  ================"
+          git config --list --show-origin
+          echo "============  cat .git/config  ================"
+          cat .git/config
+          echo "============  Show Config Local  ================"
+          git config --local --list
+
+      - name: Authentication via Token and Fetching
+        id: auth-stage
+        env:
+          token: ${{ secrets.HYBRID_GITHUB_ACTIONS_BYPASS_PR }}
+        run: |
+          git config --local user.email "action@companyproject.com"
+          git config --local user.name "GitHub Action"
+          git config --local github.user jenkins
+          git config --local github.token ${token}
+          git config --local credential.helper 'store --file .git/credentials'
+          echo "https://${token}:x-oauth-basic@github.companyproject.com" > .git/credentials
+          echo "============  Show Config Local  ================"
+          git config --local --list
+
+          echo "============  git branch  ================"
+          git branch
+          git pull
+          echo "============  fetch --all  ================"
+          git fetch --all
+          echo "============  ls-remote  ================"
+          git ls-remote https://github.companyproject.com/Company/Business.DevOps.Fork.git | head -7
+
+      - name: Checkout Develop Branch with Token
+        uses: actions/checkout@v4
+        with:
+          ref: develop
+          token: ${{ secrets.HYBRID_GITHUB_ACTIONS_BYPASS_PR }}
+
+      - name: Merge Release into Develop with Token
+        run: |
+          echo "============  git branch  ================"
+          git branch
+          git pull
+          echo "============  git fetch  ================"
+          git fetch origin -v
+          git fetch --all -v
+          echo "============  git merge  ================"
+          git merge --no-ff --allow-unrelated-histories origin/release -m "Auto merge RELEASE into DEVELOP"
+          git push origin develop -v
