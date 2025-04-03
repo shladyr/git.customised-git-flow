@@ -1,0 +1,40 @@
+@startuml
+skinparam backgroundColor #ffffff
+skinparam rectangle {
+  BackgroundColor<<input>> #e0f7fa
+  BackgroundColor<<sensor>> #ffe0b2
+  BackgroundColor<<process>> #c8e6c9
+  BackgroundColor<<output>> #d1c4e9
+  BackgroundColor<<control>> #ffccbc
+  BackgroundColor<<feedback>> #fff9c4
+}
+
+actor Developer
+
+rectangle "Developer Push\n(feature/*, fix/*)" <<input>> as Input
+rectangle "Detect Branch Change &\nCreate Draft PR to 'develop'" <<sensor>> as Sensor1
+rectangle "Merge PR → Trigger\nApp Versioning (4s octet)" <<process>> as Process1
+rectangle "Create PR from\n'develop' to 'release'" <<output>> as Output1
+rectangle "Approved PR triggers\nVersion Bump (3s octet) + Reapproval" <<process>> as Process2
+rectangle "Merge to 'release'\ntriggers Git Tag" <<output>> as Output2
+rectangle "Auto-Merge\nRelease → Develop" <<feedback>> as Feedback
+rectangle "GitHub Actions Workflows\n+ gh CLI" <<control>> as Controller
+
+Developer --> Input
+Input --> Sensor1
+Sensor1 --> Process1
+Process1 --> Output1
+Output1 --> Process2
+Process2 --> Output2
+Output2 --> Feedback
+Feedback --> Input : Maintains Loop
+
+Controller --> Sensor1
+Controller --> Process1
+Controller --> Process2
+Controller --> Feedback
+
+' Arrange layout horizontally
+left to right direction
+
+@enduml

@@ -1,0 +1,71 @@
+name: Auto PR Creation
+
+on:
+  create:
+    branches:
+      - "fix/*"
+      - "feature/*"
+
+permissions:
+  contents: write
+  pull-requests: write # Required to create pull requests
+
+jobs:
+  branch-create:
+    name: Auto PR Creation
+    runs-on: runner02
+    if: |
+      startsWith(github.ref_name, 'fix/') || 
+      startsWith(github.ref_name, 'feature/')
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4.0.0
+
+      - name: Log Branch Details
+        run: |
+          echo "Branch created: ${{ github.ref }}"
+          echo "Branch name: ${{ github.ref_name }}"
+          echo "Repository: ${{ github.repository }}"
+
+      - name: Authenticate with GitHub CLI
+        env:
+          ACTIONS_JENKINS_TOKEN: ${{ secrets.ACTIONS_JENKINS_TOKEN }}
+        run: |
+          gh auth login --with-token <<< "${{ secrets.ACTIONS_JENKINS_TOKEN }}"
+          gh auth status
+          
+      - name: Check for Git Difference in Branch
+        run: |
+          git fetch --all
+          git pull --rebase origin ${{ github.ref_name }} || echo "No updates from the remote branch."
+          if ! git diff --quiet origin/develop...${{ github.ref_name }}; then
+            echo "Changes detected. Proceeding with PR auto creation."
+          else
+            echo "No changes detected between develop and ${{ github.ref_name }} !!"
+            echo "Pull Request auto creation with adding this must-have row as init change" >> .github/.please-ignore-me.txt
+            git add .github/.please-ignore-me.txt
+            git commit -m "Auto-update: Append init row for PR creation"
+            git push origin "${{ github.ref_name }}"
+          fi
+
+      - name: Determine Base Branch and Auto Create Pull Request
+        run: |
+
+          # Check for an existing pull request
+          EXISTING_PR=$(gh pr list --base develop --head ${{ github.ref_name }} --json number --jq '.[0].number')
+          # Read the content of the template
+          PR_BODY=$(cat .github/PULL_REQUEST_TEMPLATE.md)
+
+          if [ -n "$EXISTING_PR" ]; then
+            echo "Pull request from ${{ github.ref_name }} to DEVELOP already exists: #$EXISTING_PR"
+          else
+            echo "Creating PR from ${{ github.ref_name }} to DEVELOP"
+            gh pr create \
+              --draft \
+              --base develop \
+              --head "${{ github.ref_name }}" \
+              --title "PR from ${{ github.ref_name }} to DEVELOP | edit this description" \
+              --body "$PR_BODY"
+          fi
+

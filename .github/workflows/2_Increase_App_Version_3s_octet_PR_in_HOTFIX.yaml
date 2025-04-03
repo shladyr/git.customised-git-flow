@@ -1,0 +1,169 @@
+name: Workflow_2 - Increase App Ver 3s octet on PR approved from HOT to REL
+
+on:
+  workflow_dispatch:   # Allow manual trigger
+  pull_request_review:
+    types: [submitted]
+    branches:
+      - release
+
+permissions:
+  contents: write
+
+jobs:
+  increment-3s-octet-and-re-approve-pr:
+    runs-on: runner02
+    if: >-
+      github.event.review.state == 'approved' &&
+      github.event.pull_request.base.ref == 'release' &&
+      github.event.pull_request.head.ref == 'hotfix'
+    env:
+      PROJECTS_LIST: |
+        SERVICE_A=./SERVICE_A/src/Company.SERVICE_A.Api/Company.SERVICE_A.Api.csproj
+        SERVICE_B=./ServiceB/src/Company.ServiceB.Api/Company.ServiceB.Api.csproj
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check PR approver name and comment
+        id: auto_approval_check
+        run: |
+          APPROVER_NAME="${{ github.event.review.user.login }}"
+          REVIEW_COMMENT="${{ github.event.review.body }}"
+          APPROVED_BY_JENKINSUSER_WITH_SPECIFIC_COMMENT="false"
+          echo "Approver Name: $APPROVER_NAME"
+          echo "PR REVIEW COMMENT: $REVIEW_COMMENT"
+          if [ "$APPROVER_NAME" == "jenkins" ] && [[ "$REVIEW_COMMENT" == "Re-approving PR after automated GitHub Action commit" ]]; then
+            APPROVED_BY_JENKINSUSER_WITH_SPECIFIC_COMMENT="true"
+          fi
+          echo "APPROVED_BY_JENKINSUSER_WITH_SPECIFIC_COMMENT=$APPROVED_BY_JENKINSUSER_WITH_SPECIFIC_COMMENT" >> $GITHUB_ENV
+
+      - name: Verify Versions
+        if: env.APPROVED_BY_JENKINSUSER_WITH_SPECIFIC_COMMENT == 'false'
+        id: verify_versions
+        run: |
+          #!/usr/bin/env bash
+          set -e
+
+          echo "Projects list:"
+          echo "$PROJECTS_LIST"
+
+          declare -A PROJECTS
+          while IFS='=' read -r key value; do
+            [ -z "$key" ] && continue
+            PROJECTS[$key]=$value
+          done < <(echo "$PROJECTS_LIST")
+
+          # Use the SERVICE_A project as the source of truth
+          SOURCE_PROJECT="SERVICE_A"
+          SOURCE_CSPROJ="${PROJECTS[$SOURCE_PROJECT]}"
+
+          CURRENT_VERSION=$(awk -F '[<>]' '/<Version>/{print $3}' "$SOURCE_CSPROJ")
+          if [ -z "$CURRENT_VERSION" ]; then
+            echo "No <Version> tag found in $SOURCE_CSPROJ"
+            exit 1
+          fi
+
+          # Verify that all projects have the same version
+          for PROJECT in "${!PROJECTS[@]}"; do
+            CSPROJ_PATH="${PROJECTS[$PROJECT]}"
+            PROJECT_VERSION=$(awk -F '[<>]' '/<Version>/{print $3}' "$CSPROJ_PATH")
+
+            if [ "$PROJECT_VERSION" != "$CURRENT_VERSION" ]; then
+              echo "Version mismatch detected in $CSPROJ_PATH"
+              echo "Expected: $CURRENT_VERSION, Found: $PROJECT_VERSION"
+              exit 1
+            fi
+          done
+
+          echo "All project versions match: $CURRENT_VERSION"
+          echo "CURRENT_VERSION=$CURRENT_VERSION" >> $GITHUB_ENV
+          echo "CURRENT_VERSION=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Increment Versions for All Projects
+        if: env.APPROVED_BY_JENKINSUSER_WITH_SPECIFIC_COMMENT == 'false'
+        id: increment_versions
+        run: |
+          #!/usr/bin/env bash
+          set -e
+          
+          CURRENT_VERSION="${CURRENT_VERSION}"
+
+          declare -A PROJECTS
+          while IFS='=' read -r key value; do
+            [ -z "$key" ] && continue
+            PROJECTS[$key]=$value
+          done < <(echo "$PROJECTS_LIST")
+
+          # Split the version into an array: MAJOR.MINOR.PATCH.BUILD
+          IFS='.' read -ra VERSION_ARRAY <<< "$CURRENT_VERSION"
+          VERSION_ARRAY[0]=${VERSION_ARRAY[0]#v} # Just in case we have a leading 'v'
+
+          # Increment the 3rd octet (PATCH) and reset the 4th (BUILD) to 0
+          PATCH_NUMBER=$((VERSION_ARRAY[2] + 1))
+          VERSION_ARRAY[2]=$PATCH_NUMBER
+          VERSION_ARRAY[3]=0
+
+          INCREMENTED_APP_VERSION="${VERSION_ARRAY[0]}.${VERSION_ARRAY[1]}.${VERSION_ARRAY[2]}.${VERSION_ARRAY[3]}"
+          echo "Incrementing all projects from $CURRENT_VERSION to $INCREMENTED_APP_VERSION"
+
+          for PROJECT in "${!PROJECTS[@]}"; do
+            CSPROJ_PATH="${PROJECTS[$PROJECT]}"
+            awk -v newver="$INCREMENTED_APP_VERSION" '/<Version>/{gsub(/>[^<]+</,">"newver"<")}1' "$CSPROJ_PATH" > temp.csproj
+            mv temp.csproj "$CSPROJ_PATH"
+          done
+
+          echo "NEW_VERSION=$INCREMENTED_APP_VERSION" >> $GITHUB_ENV
+          echo "NEW_VERSION=$INCREMENTED_APP_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Commit and push changes
+        if: env.APPROVED_BY_JENKINSUSER_WITH_SPECIFIC_COMMENT == 'false'
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git pull --rebase --autostash origin ${{ github.event.pull_request.head.ref }}
+          git add .
+          if ! git diff --cached --quiet; then
+            git commit -m "Incremented App Version from $CURRENT_VERSION to $NEW_VERSION"
+            git push origin HEAD:${{ github.event.pull_request.head.ref }}
+          else
+            echo "No changes to commit."
+          fi
+
+      - name: Sleep 15 sec
+        if: env.APPROVED_BY_JENKINSUSER_WITH_SPECIFIC_COMMENT == 'false'
+        id: sleep
+        run: sleep 15
+
+      - name: Get PR Number
+        if: env.APPROVED_BY_JENKINSUSER_WITH_SPECIFIC_COMMENT == 'false'
+        run: echo "PR_NUMBER=${{ github.event.pull_request.number }}"
+
+      - name: Auth
+        if: env.APPROVED_BY_JENKINSUSER_WITH_SPECIFIC_COMMENT == 'false'
+        id: auth
+        env:
+          ACTIONS_JENKINS_TOKEN: ${{ secrets.ACTIONS_JENKINS_TOKEN }}
+        run: |
+          gh version
+          echo ${ACTIONS_JENKINS_TOKEN} | gh auth login --hostname github.companyproject.com --with-token
+          gh auth status
+
+      - name: Re-approve PR with commit made by User "GitHub Action"
+        if: env.APPROVED_BY_JENKINSUSER_WITH_SPECIFIC_COMMENT == 'false'
+        env:
+          ACTIONS_JENKINS_TOKEN: ${{ secrets.ACTIONS_JENKINS_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          echo "PR_URL=${PR_URL}"
+          echo "PR_NUMBER=${{ github.event.pull_request.number }}"
+          COMMIT_AUTHOR=$(git log -1 --pretty=format:'%an')
+          if [[ "$COMMIT_AUTHOR" == "GitHub Action" ]]; then
+            echo "!!!   Automated GitHub Action commit detected. Re-approving PR."
+            gh pr review --approve --body "Re-approving PR after automated GitHub Action commit" ${{ github.event.pull_request.number }}
+          else
+            echo "Commit made by a human. Manual approval required."
+          fi
